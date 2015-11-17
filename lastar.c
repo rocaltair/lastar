@@ -25,6 +25,27 @@ typedef struct {
 	int y;
 } pathnode_t;
 
+static int lua__isarray(lua_State *L, int idx)
+{
+        int isarray = 0;
+        int len = 0;
+        int top = lua_gettop(L);
+        lua_pushvalue(L, idx);
+        if (!lua_istable(L, -1))
+                goto finished;
+
+        len = lua_objlen(L, -1);
+        if (len > 0) {
+                lua_pushnumber(L, len);
+                if (lua_next(L,-2) == 0) { 
+                        isarray = 1;
+                }   
+        }   
+finished:
+        lua_settop(L, top);
+        return isarray;
+}
+
 static int world_at(map_t * map, int x, int y)
 {
 	int i;
@@ -35,7 +56,7 @@ static int world_at(map_t * map, int x, int y)
 	return -1;
 }
 
-static void PathNodeNeighbors(ASNeighborList neighbors, void *node, void *context)
+static void path_neighbors(ASNeighborList neighbors, void *node, void *context)
 {
 	int i,j;
 	float dis;
@@ -61,8 +82,8 @@ static int lua__new_map(lua_State *L)
 	int sz;
 	map_t *map;
 	map_t **pmap;
-	if (!lua_istable(L, 1)) {
-		return luaL_error(L, "#1 table required in %s", __FUNCTION__);
+	if (!lua__isarray(L, 1)) {
+		return luaL_error(L, "#1 array required in %s", __FUNCTION__);
 	}
 	w = luaL_checkinteger(L, 2);
 	h = luaL_checkinteger(L, 3);
@@ -81,8 +102,11 @@ static int lua__new_map(lua_State *L)
 	while (lua_next(L, 1) != 0) {
 		int i = lua_tointeger(L, -2);
 		uint32_t v = (uint32_t)lua_tointeger(L, -1);
-		map->bits[i - 1] = v;
 		lua_pop(L, 1);
+		if (i > sz) {
+			break;
+		}
+		map->bits[i - 1] = v;
 	}
 
 	pmap = lua_newuserdata(L, sizeof(void *));
@@ -92,7 +116,7 @@ static int lua__new_map(lua_State *L)
 	return 1;
 }
 
-static float PathNodeHeuristic(void *fromNode, void *toNode, void *context)
+static float path_heuristic(void *fromNode, void *toNode, void *context)
 {
 	pathnode_t *from = (pathnode_t *)fromNode;
 	pathnode_t *to = (pathnode_t *)toNode;
@@ -107,10 +131,10 @@ static float PathNodeHeuristic(void *fromNode, void *toNode, void *context)
 
 static int lua__path(lua_State *L)
 {
-	ASPathNodeSource PathNodeSource = {
+	ASPathNodeSource pathnode_source = {
 		sizeof(pathnode_t),
-		&PathNodeNeighbors,
-		&PathNodeHeuristic,
+		&path_neighbors,
+		&path_heuristic,
 		NULL,
 		NULL
 	};
@@ -132,7 +156,7 @@ static int lua__path(lua_State *L)
 		return luaL_error(L, "to point error!");
 	}
 
-	path = ASPathCreate(&PathNodeSource, map, &from, &to);
+	path = ASPathCreate(&pathnode_source, map, &from, &to);
 
 	sz = ASPathGetCount(path);
 	lua_newtable(L);
