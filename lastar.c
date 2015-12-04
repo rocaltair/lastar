@@ -6,18 +6,19 @@
 #include "AStar.h"
 
 #define ASTAR_MAP "astar{map}"
-#define IS_SET(bits, i) (bits[i/sizeof(uint32_t)] & (1 << (i%sizeof(uint32_t))))
-#define SET_SET(bits, i) bits[i/sizeof(uint32_t)] |= (1 << (i%sizeof(uint32_t)))
 #define check_map(L, i) (*(map_t **)luaL_checkudata(L, i, ASTAR_MAP))
 
 #if LUA_VERSION_NUM < 502
 #  define luaL_newlib(L,l) (lua_newtable(L), luaL_register(L,NULL,l))
 #endif
 
+#define REF_MAP "astar{ref}"
+
 typedef struct map_s {
 	int w;
 	int h;
-	uint32_t bits[0];
+	int ref;
+	void *udata;
 } map_t;
 
 typedef struct {
@@ -25,51 +26,117 @@ typedef struct {
 	int y;
 } pathnode_t;
 
-static int lua__isarray(lua_State *L, int idx)
+static int getfuncbyref(lua_State *L, const char * module, int ref)
 {
-        int isarray = 0;
-        int len = 0;
-        int top = lua_gettop(L);
-        lua_pushvalue(L, idx);
-        if (!lua_istable(L, -1))
-                goto finished;
-
-        len = lua_objlen(L, -1);
-        if (len > 0) {
-                lua_pushnumber(L, len);
-                if (lua_next(L,-2) == 0) { 
-                        isarray = 1;
-                }   
-        }   
-finished:
-        lua_settop(L, top);
-        return isarray;
+	lua_pushstring(L, module);
+	lua_rawget(L, LUA_REGISTRYINDEX);
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 1);
+		return -1;
+	}
+	lua_rawgeti(L, -1, ref);
+	lua_insert(L, -2);
+	lua_pop(L, 1);
+	return 0;
 }
 
-static int world_at(map_t * map, int x, int y)
+static int unreffunc(lua_State *L, const char * module, int ref)
 {
-	int i;
-	if (x >= 0 && x < map->w && y >= 0 && y < map->h) {
-		i = y * map->h + x;
-		return IS_SET(map->bits, i);
+	lua_pushstring(L, module);
+	lua_rawget(L, LUA_REGISTRYINDEX);
+	if (!lua_istable(L, -1)) {
+		lua_pop(L, 1);
+		return -1;
 	}
-	return -1;
+	lua_pushnil(L);
+	lua_rawseti(L, -2, ref);
+	lua_pop(L, 1);
+	return 0;
+}
+
+static int pushfunc(lua_State *L, const char * module, int funcidx)
+{
+	int ref;
+	if (funcidx < 0) {
+		funcidx = lua_gettop(L) + 1 + funcidx;
+	}
+	lua_pushstring(L, module);
+	lua_rawget(L, LUA_REGISTRYINDEX);
+	if (lua_isnil(L, -1)) {
+		lua_pop(L, 1); 
+		lua_pushstring(L, module);
+		lua_newtable(L);
+		lua_rawset(L, LUA_REGISTRYINDEX);
+		lua_pushstring(L, module);
+		lua_rawget(L, LUA_REGISTRYINDEX);
+	}
+	lua_pushvalue(L, funcidx);
+	ref = luaL_ref(L, -2);
+	lua_pop(L, 1);
+	return ref;
+}
+
+static int get_neighbors(lua_State *L, int ref,
+			 int w, int h,
+			 int sx, int sy,
+			 int ex, int ey,
+			 float *dis)
+{
+	int ret;
+	int lret;
+	int rtop;
+	int top = lua_gettop(L);
+	if (getfuncbyref(L, REF_MAP, ref) != 0) {
+		return -1;
+	}
+	lua_pushinteger(L, w);
+	lua_pushinteger(L, h);
+	lua_pushinteger(L, sx);
+	lua_pushinteger(L, sy);
+	lua_pushinteger(L, ex);
+	lua_pushinteger(L, ey);
+	ret = lua_pcall(L, 6, LUA_MULTRET, 0);
+	if (ret != 0) {
+		lua_settop(L, top);
+		return -1;
+	}
+	rtop = lua_gettop(L);
+	if (rtop <= top) {
+		return -1;
+	}
+	lret = lua_toboolean(L, top+1);
+	if (rtop - top >= 2) {
+		*dis = (float)lua_tonumber(L, top+2);
+	}
+	lua_settop(L, top);
+	return !lret;
 }
 
 static void path_neighbors(ASNeighborList neighbors, void *node, void *context)
 {
 	int i,j;
+	int sx,sy;
+	int w, h;
 	float dis;
 	pathnode_t *pathNode = (pathnode_t *)node;
 	map_t *map = (map_t *)context;
+	lua_State *L = (lua_State *)map->udata;
+	
+	w = map->w;
+	h = map->h;
+
+	sx = pathNode->x;
+	sy = pathNode->y;
+
 	for (i=-1; i<=1; i++) {
 		for (j=-1; j<=1; j++) {
-			if (i==0 && j == 0) {
+			int tx = sx + i;
+			int ty = sy + j;
+			if ( ( i == 0 && j == 0) || tx > w || tx <= 0 || ty > h || ty <= 0) {
 				continue;
 			}
-			if (world_at(map, pathNode->x+i, pathNode->y+j) == 0) {
-				pathnode_t add = {pathNode->x+i, pathNode->y+j};
-				dis = (i * j != 0) ? 1.4 : 1;
+			if (get_neighbors(L, map->ref, w, h, sx, sy, tx, ty, &dis) == 0) {
+				pathnode_t add = {tx, ty};
 				ASNeighborListAdd(neighbors, &add, dis);
 			}
 		}
@@ -79,40 +146,30 @@ static void path_neighbors(ASNeighborList neighbors, void *node, void *context)
 static int lua__new_map(lua_State *L)
 {
 	int w,h;
-	int sz;
 	map_t *map;
 	map_t **pmap;
-	if (!lua__isarray(L, 1)) {
-		return luaL_error(L, "#1 array required in %s", __FUNCTION__);
+	w = luaL_checkinteger(L, 1);
+	h = luaL_checkinteger(L, 2);
+
+	if (!lua_isfunction(L, 3)) {
+		return luaL_typerror(L, 3, "function");
 	}
-	w = luaL_checkinteger(L, 2);
-	h = luaL_checkinteger(L, 3);
-	sz = (w * h) / sizeof(uint32_t) + 1;
-	map = malloc(sizeof(map_t) + sz * sizeof(uint32_t));
+	
+	map = malloc(sizeof(*map));
 	if (map == NULL) {
 		luaL_error(L, "create map failed, no memory");
 		return 0;
 	}
 	map->w = w;
 	map->h = h;
-	bzero(map->bits, sz);
-	
-
-	lua_pushnil(L);  /* first key */
-	while (lua_next(L, 1) != 0) {
-		int i = lua_tointeger(L, -2);
-		uint32_t v = (uint32_t)lua_tointeger(L, -1);
-		lua_pop(L, 1);
-		if (i > sz) {
-			break;
-		}
-		map->bits[i - 1] = v;
-	}
 
 	pmap = lua_newuserdata(L, sizeof(void *));
 	*pmap = map;
 	luaL_getmetatable(L, ASTAR_MAP);
 	lua_setmetatable(L, -2);
+
+	map->ref = pushfunc(L, REF_MAP, 3);
+
 	return 1;
 }
 
@@ -145,14 +202,15 @@ static int lua__path(lua_State *L)
 	int sz;
 
 	map_t *map = check_map(L, 1);
-	from.x = luaL_checkinteger(L, 2) - 1;
-	from.y = luaL_checkinteger(L, 3) - 1;
-	to.x = luaL_checkinteger(L, 4) - 1;
-	to.y = luaL_checkinteger(L, 5) - 1;
-	if (from.x < 0 || from.x >= map->w || from.y < 0 || from.y >= map->h) {
+	map->udata = L;
+	from.x = luaL_checkinteger(L, 2);
+	from.y = luaL_checkinteger(L, 3);
+	to.x = luaL_checkinteger(L, 4);
+	to.y = luaL_checkinteger(L, 5);
+	if (from.x <= 0 || from.x > map->w || from.y <= 0 || from.y > map->h) {
 		return luaL_error(L, "from point error!");
 	}
-	if (to.x < 0 || to.x >= map->w || to.y < 0 || to.y >= map->h) {
+	if (to.x <= 0 || to.x > map->w || to.y <= 0 || to.y > map->h) {
 		return luaL_error(L, "to point error!");
 	}
 
@@ -163,10 +221,12 @@ static int lua__path(lua_State *L)
 	for (i=0; i<sz; i++) {
 		pathnode_t *pathNode = ASPathGetNode(path, i);
 		lua_newtable(L);
-		lua_pushinteger(L, pathNode->x + 1);
-		lua_setfield(L, -2, "x");
-		lua_pushinteger(L, pathNode->y + 1);
-		lua_setfield(L, -2, "y");
+
+		lua_pushinteger(L, pathNode->x);
+		lua_rawseti(L, -2, 1);
+		lua_pushinteger(L, pathNode->y);
+		lua_rawseti(L, -2, 2);
+
 		lua_rawseti(L, -2, i + 1);
 	}
 	lua_pushnumber(L, ASPathGetCost(path));
@@ -177,6 +237,7 @@ static int lua__path(lua_State *L)
 static int lua__gc(lua_State *L)
 {
 	map_t *map = check_map(L, 1);
+	unreffunc(L, REF_MAP, map->ref);
 	free(map);
 	return 0;
 }
