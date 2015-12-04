@@ -86,7 +86,7 @@ typedef struct {
 static const Node NodeNull = {NULL, -1};
 
 #ifdef _WIN32
-# define INLINE
+# define INLINE __inline
 #else
 # define INLINE inline
 #endif
