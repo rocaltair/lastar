@@ -116,7 +116,7 @@ static void path_neighbors(ASNeighborList neighbors, void *node, void *context)
 	int i,j;
 	int sx,sy;
 	int w, h;
-	float dis;
+	float dis = 0.0f;
 	pathnode_t *pathNode = (pathnode_t *)node;
 	map_t *map = (map_t *)context;
 	lua_State *L = (lua_State *)map->udata;
