@@ -131,7 +131,7 @@ static void path_neighbors(ASNeighborList neighbors, void *node, void *context)
 		for (j=-1; j<=1; j++) {
 			int tx = sx + i;
 			int ty = sy + j;
-			if ( ( i == 0 && j == 0) || tx > w || tx <= 0 || ty > h || ty <= 0) {
+			if ( ( i == 0 && j == 0) || tx > w || tx < 0 || ty > h || ty < 0) {
 				continue;
 			}
 			if (get_neighbors(L, map->ref, w, h, sx, sy, tx, ty, &dis) == 0) {
@@ -147,8 +147,8 @@ static int lua__new_map(lua_State *L)
 	int w,h;
 	map_t *map;
 	map_t **pmap;
-	w = luaL_checkinteger(L, 1);
-	h = luaL_checkinteger(L, 2);
+	w = (int)luaL_checkinteger(L, 1);
+	h = (int)luaL_checkinteger(L, 2);
 
 	if (!lua_isfunction(L, 3)) {
 		return luaL_typerror(L, 3, "function");
@@ -198,19 +198,23 @@ static int lua__path(lua_State *L)
 	pathnode_t from;
 	pathnode_t to;
 	int i;
-	int sz;
+	size_t sz;
 
 	map_t *map = check_map(L, 1);
 	map->udata = L;
-	from.x = luaL_checkinteger(L, 2);
-	from.y = luaL_checkinteger(L, 3);
-	to.x = luaL_checkinteger(L, 4);
-	to.y = luaL_checkinteger(L, 5);
-	if (from.x <= 0 || from.x > map->w || from.y <= 0 || from.y > map->h) {
-		return luaL_error(L, "from point error!");
+	from.x = (int)luaL_checkinteger(L, 2);
+	from.y = (int)luaL_checkinteger(L, 3);
+	to.x = (int)luaL_checkinteger(L, 4);
+	to.y = (int)luaL_checkinteger(L, 5);
+	if (from.x < 0 || from.x > map->w || from.y < 0 || from.y > map->h) {
+		lua_pushboolean(L, 0);
+		lua_pushstring(L, "from point error!");
+		return 2;
 	}
-	if (to.x <= 0 || to.x > map->w || to.y <= 0 || to.y > map->h) {
-		return luaL_error(L, "to point error!");
+	if (to.x < 0 || to.x > map->w || to.y < 0 || to.y > map->h) {
+		lua_pushboolean(L, 0);
+		lua_pushstring(L, "to point error!");
+		return 2;
 	}
 
 	path = ASPathCreate(&pathnode_source, map, &from, &to);
@@ -259,7 +263,7 @@ static int opencls__map(lua_State *L)
 
 int luaopen_lastar(lua_State* L)
 {
-	luaL_Reg lfuncs[] = {
+	static luaL_Reg lfuncs[] = {
 		{"new", lua__new_map},
 		{NULL, NULL},
 	};
