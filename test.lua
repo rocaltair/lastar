@@ -16,7 +16,7 @@ local function neighbor(w, h, fx, fy, tx, ty)
 	if blockmap[idx] ~= 0 then
 		return
 	end
-	local dis = (tx - fx) * (ty - fy) > 0 and 1 or 1.4
+	local dis = (tx - fx) * (ty - fy) > 0 and 1.4 or 1
 	return true, dis
 end
 
